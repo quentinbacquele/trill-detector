@@ -1,0 +1,42 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Data directories (not for repo)
+data/
+yolo-dataset/
+2024 06 09 SMM144/
+spectrograms/
+
+# Detection outputs
+detections_final_m/
+inf/
+validate_inf/
+validate_inf2/
+
+# Training runs (we keep trained weights in models/ instead)
+runs/
+
+# Untrained base model weights
+yolo11n.pt
+yolo11m.pt
+yolo11l.pt
+
+# Data files
+*.csv
+*.xlsx
+Twitter Vocal Signatures.*
+processed_annotations.csv
+
+# OS files
+.DS_Store
+
+# Jupyter checkpoints
+.ipynb_checkpoints/

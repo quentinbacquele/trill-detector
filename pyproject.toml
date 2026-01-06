@@ -1,0 +1,15 @@
+[project]
+name = "trills-sparrows"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.3.3",
+    "soundfile>=0.13.1",
+    "ultralytics>=8.3.227",
+    "noisereduce>=3.0.0",
+    "ipykernel>=7.1.0",
+    "ipywidgets>=8.1.8",
+    "widgetsnbextension>=4.0.15",
+]
