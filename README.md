@@ -83,7 +83,8 @@ Converts master annotation logs into a structured CSV with per-file annotations.
 python process_trill_metadata.py \
   --root "path/to/recordings" \
   --output-csv processed_annotations.csv \
-  --spectrogram-dir spectrograms
+  --spectrogram-dir spectrograms \
+  --filter-twitter
 ```
 
 Key options:
