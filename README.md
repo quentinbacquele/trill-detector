@@ -89,17 +89,29 @@ python process_trill_metadata.py \
   --filter-twitter
 ```
 
-Key options:
+Arguments:
 
 | Flag | Description |
 |------|-------------|
-| `--root` | Folder containing metafiles and WAV recordings |
-| `--default-spacer-seconds` | Default spacer duration used for every spacer entry in a metafile (default `55.125`) |
-| `--spacer-duration-override NAME=SECONDS` | Override spacer duration for a specific metafile or deployment folder |
-| `--skip-spectrograms` | Skip image generation (faster) |
-| `--extract-clips` | Save audio clips for each annotation |
-| `--filter-twitter` | Filter to specific call types from signatures CSV |
-| `--diagnose` | Print the reconstructed audio/spacer timeline used for annotation mapping |
+| `--meta [META ...]` | Process only the specified metafile(s) instead of scanning the whole root. |
+| `--root ROOT` | Root directory used to discover metafiles when `--meta` is not supplied. |
+| `--log LOG` | Override the annotation log path for a single-metafile run. |
+| `--audio-dir AUDIO_DIR` | Override the directory used to resolve WAV files listed in the metafile. |
+| `--output-csv OUTPUT_CSV` | Destination CSV path for the per-file annotations. |
+| `--spectrogram-dir SPECTROGRAM_DIR` | Directory where annotation spectrogram PNGs are written. |
+| `--skip-spectrograms` | Disable spectrogram generation. |
+| `--spectrogram-padding SPECTROGRAM_PADDING` | Seconds of padding before and after each annotation when rendering spectrograms. |
+| `--extract-clips` | Also write per-annotation audio clips. |
+| `--clip-dir CLIP_DIR` | Directory where extracted clips are written. |
+| `--clip-padding CLIP_PADDING` | Seconds of padding before and after each extracted clip. |
+| `--bandpass-margin BANDPASS_MARGIN` | Extra Hz added above and below the annotation band when filtering extracted clips. |
+| `--default-spacer-seconds DEFAULT_SPACER_SECONDS` | Spacer duration used for every spacer entry unless a matching override is provided. Default: `55.125`. |
+| `--spacer-use-audio-duration` | If explicitly enabled, a spacer WAV can use its actual audio length instead of the configured spacer value. |
+| `--spacer-duration-override NAME=SECONDS` | Override spacer duration for a specific metafile or deployment folder. Repeat the flag to provide multiple overrides. |
+| `--diagnose` | Print the reconstructed audio/spacer timeline and effective spacer settings used for mapping. |
+| `--tolerance TOLERANCE` | Matching tolerance in seconds when assigning an annotation to a WAV segment. |
+| `--filter-twitter` | Keep only annotations whose comment matches an `AnnotationName` from the Twitter signatures sheet. |
+| `--twitter-signatures TWITTER_SIGNATURES` | Path to the Twitter Vocal Signatures CSV used by `--filter-twitter`. |
 
 Run `python process_trill_metadata.py --help` for all options.
 

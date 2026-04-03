@@ -182,7 +182,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--diagnose",
         action="store_true",
-        help="Print the resolved segment timeline and source-field mismatches for each metafile.",
+        help="Print the resolved segment timeline and effective spacer settings for each metafile.",
     )
     parser.add_argument(
         "--tolerance",
