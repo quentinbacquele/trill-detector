@@ -10,7 +10,7 @@ import math
 import os
 import re
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, List, Optional, Sequence, Tuple, Set, Mapping
 
 import numpy as np
@@ -80,8 +80,8 @@ def parse_spacer_override(value: str) -> Tuple[str, float]:
         duration = float(seconds)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"Invalid spacer duration '{seconds}' for {key!r}.") from exc
-    if duration <= 0.0:
-        raise argparse.ArgumentTypeError("Spacer override duration must be positive.")
+    if duration < 0.0:
+        raise argparse.ArgumentTypeError("Spacer override duration cannot be negative.")
     return key.lower(), duration
 
 
@@ -162,8 +162,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--default-spacer-seconds",
         type=float,
-        default=55.0,
+        default=55.125,
         help="Effective duration (seconds) to subtract for spacer entries.",
+    )
+    parser.add_argument(
+        "--spacer-use-audio-duration",
+        action="store_true",
+        help="When a spacer entry is itself a WAV file, use its actual audio duration instead of "
+        "--default-spacer-seconds or overrides.",
     )
     parser.add_argument(
         "--spacer-duration-override",
@@ -172,6 +178,11 @@ def parse_args() -> argparse.Namespace:
         type=parse_spacer_override,
         metavar="NAME=SECONDS",
         help="Override spacer duration for specific metafile names. Repeat to supply multiple overrides.",
+    )
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="Print the resolved segment timeline and source-field mismatches for each metafile.",
     )
     parser.add_argument(
         "--tolerance",
@@ -193,48 +204,150 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_spacer_override(meta: Path, overrides: Dict[str, float]) -> Optional[float]:
-    if not overrides:
-        return None
-
+def normalize_override_candidates(*values: str) -> Set[str]:
     def trim_suffix_insensitive(value: str, suffix: str) -> Optional[str]:
         if suffix and value.lower().endswith(suffix.lower()):
             return value[: -len(suffix)]
         return None
 
     candidates: Set[str] = set()
-    raw_values = {meta.name, meta.stem}
-    if meta.suffix:
-        raw_values.add(meta.name[: -len(meta.suffix)])
+    pending = [value for value in values if value]
 
-    for raw in raw_values:
-        if not raw:
-            continue
+    while pending:
+        raw = pending.pop()
         stripped = raw.strip()
         if not stripped:
             continue
-        candidates.add(stripped.lower())
+        lowered = stripped.lower()
+        if lowered in candidates:
+            continue
+        candidates.add(lowered)
 
-        trimmed_txt = trim_suffix_insensitive(stripped, ".txt")
-        if trimmed_txt:
-            candidates.add(trimmed_txt.strip().lower())
+        for suffix in (".txt", " metafile", "_metafile", "-metafile"):
+            trimmed = trim_suffix_insensitive(stripped, suffix)
+            if trimmed:
+                pending.append(trimmed)
 
-        trimmed_space = trim_suffix_insensitive(stripped, " metafile")
-        if trimmed_space:
-            candidates.add(trimmed_space.strip().lower())
+    return candidates
 
-        trimmed_under = trim_suffix_insensitive(stripped, "_metafile")
-        if trimmed_under:
-            candidates.add(trimmed_under.strip().lower())
+
+def resolve_spacer_override(meta: Path, overrides: Dict[str, float]) -> Tuple[Optional[float], Optional[str]]:
+    if not overrides:
+        return None, None
+
+    raw_values = [meta.name, meta.stem]
+    if meta.suffix:
+        raw_values.append(meta.name[: -len(meta.suffix)])
+    raw_values.append(meta.parent.name)
+    if meta.parent.name:
+        raw_values.append(f"{meta.parent.name} metafile")
+        raw_values.append(f"{meta.parent.name}_metafile")
+        raw_values.append(f"{meta.parent.name}-metafile")
+
+    candidates = normalize_override_candidates(*raw_values)
 
     for candidate in candidates:
         if candidate in overrides:
-            return overrides[candidate]
-    return None
+            return overrides[candidate], candidate
+    return None, None
+
+
+def entry_name_variants(entry_name: str) -> Set[str]:
+    names = {entry_name.strip()}
+    for variant in list(names):
+        if "\\" in variant:
+            names.add(variant.replace("\\", "/"))
+        if "/" in variant:
+            names.add(variant.replace("/", "\\"))
+    return {name for name in names if name}
+
+
+def entry_basename_candidates(entry_name: str) -> Set[str]:
+    candidates: Set[str] = set()
+    for variant in entry_name_variants(entry_name):
+        candidates.add(Path(variant).name)
+        candidates.add(PureWindowsPath(variant).name)
+        candidates.add(PurePosixPath(variant).name)
+    return {candidate for candidate in candidates if candidate}
+
+
+def resolve_audio_entry_path(entry_name: str, audio_dir: Path, search_root: Path) -> Path:
+    candidates: List[Path] = []
+    seen: Set[Path] = set()
+
+    def add_candidate(path: Path) -> None:
+        try:
+            resolved = path.expanduser().resolve(strict=False)
+        except OSError:
+            resolved = path
+        if resolved not in seen:
+            seen.add(resolved)
+            candidates.append(path)
+
+    for variant in entry_name_variants(entry_name):
+        raw_path = Path(variant).expanduser()
+        if raw_path.is_absolute():
+            add_candidate(raw_path)
+        add_candidate(audio_dir / raw_path)
+
+    for basename in entry_basename_candidates(entry_name):
+        add_candidate(audio_dir / basename)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    basename_matches: List[Path] = []
+    for basename in entry_basename_candidates(entry_name):
+        basename_matches.extend(match for match in search_root.rglob(basename) if match.is_file())
+
+    unique_matches: List[Path] = []
+    seen_matches: Set[Path] = set()
+    for match in basename_matches:
+        resolved = match.resolve()
+        if resolved not in seen_matches:
+            seen_matches.add(resolved)
+            unique_matches.append(match)
+
+    if len(unique_matches) == 1:
+        return unique_matches[0]
+
+    if len(unique_matches) > 1:
+        matches_preview = ", ".join(str(path) for path in unique_matches[:5])
+        raise FileNotFoundError(
+            f"Metafile entry {entry_name!r} matched multiple WAV files under {search_root}: "
+            f"{matches_preview}"
+        )
+
+    raise FileNotFoundError(
+        f"Could not resolve WAV entry {entry_name!r}. Checked relative to {audio_dir} "
+        f"and searched under {search_root}."
+    )
+
+
+def resolve_spacer_duration(
+    entry_name: str,
+    audio_dir: Path,
+    search_root: Path,
+    default_spacer: float,
+    use_audio_duration: bool,
+) -> float:
+    if use_audio_duration and entry_name.lower().endswith(".wav"):
+        try:
+            entry_path = resolve_audio_entry_path(entry_name, audio_dir, search_root)
+        except FileNotFoundError:
+            return infer_spacer_duration(entry_name, default_spacer)
+        info = sf.info(entry_path)
+        return info.frames / float(info.samplerate)
+    return infer_spacer_duration(entry_name, default_spacer)
 
 
 def read_metafile(
-    path: Path, audio_dir: Path, default_spacer: float
+    path: Path,
+    audio_dir: Path,
+    default_spacer: float,
+    search_root: Path,
+    spacer_use_audio_duration: bool,
 ) -> Tuple[List[Segment], Path]:
     if not path.exists():
         raise FileNotFoundError(f"Metafile not found: {path}")
@@ -256,19 +369,26 @@ def read_metafile(
     for entry in lines:
         entry_name = entry.strip()
         entry_lower = entry_name.lower()
-        entry_path = (audio_dir / entry_name) if entry_lower.endswith(".wav") else None
         is_spacer = "spacer" in entry_lower
-        is_audio = entry_path is not None and entry_path.exists() and not is_spacer
+        entry_path: Optional[Path] = None
+        is_audio = entry_lower.endswith(".wav") and not is_spacer
         samplerate: Optional[int] = None
         channels: Optional[int] = None
 
         if is_audio:
+            entry_path = resolve_audio_entry_path(entry_name, audio_dir, search_root)
             info = sf.info(entry_path)
             duration = info.frames / float(info.samplerate)
             samplerate = info.samplerate
             channels = info.channels
         else:
-            duration = infer_spacer_duration(entry_name, default_spacer)
+            duration = resolve_spacer_duration(
+                entry_name,
+                audio_dir,
+                search_root,
+                default_spacer,
+                spacer_use_audio_duration,
+            )
 
         segment = Segment(
             name=entry_name,
@@ -320,6 +440,22 @@ def load_annotations(log_path: Path) -> List[Tuple[str, int, float, float, float
     return annotations
 
 
+def clamp_time(value: float, lower: float, upper: float) -> float:
+    return min(max(value, lower), upper)
+
+
+def describe_timeline_position(position: float, segments: Sequence[Segment]) -> str:
+    for seg in segments:
+        if seg.start <= position <= seg.end:
+            kind = "audio" if seg.is_audio else "spacer"
+            return f"{kind} segment '{seg.name}' spanning {seg.start:.6f}-{seg.end:.6f}s"
+    if not segments:
+        return "an empty segment timeline"
+    if position < segments[0].start:
+        return f"before the first segment '{segments[0].name}'"
+    return f"after the final segment '{segments[-1].name}'"
+
+
 def map_annotations_to_segments(
     annotations: Sequence[Tuple[str, int, float, float, float, float, str, str]],
     segments: Sequence[Segment],
@@ -331,30 +467,32 @@ def map_annotations_to_segments(
     for index, (source, channel, left, right, top, bottom, comment, notes) in enumerate(
         annotations, start=1
     ):
-        remaining_left = left
-        remaining_right = right
         target_segment: Optional[Segment] = None
         left_rel = 0.0
         right_rel = 0.0
 
         for seg in segments:
-            duration = seg.duration
-
-            if seg.is_audio:
-                if remaining_left <= duration + tolerance:
-                    target_segment = seg
-                    left_rel = max(remaining_left, 0.0)
-                    right_rel = min(remaining_right, duration)
-                    break
-                remaining_left -= duration
-                remaining_right -= duration
-            else:
-                remaining_left = max(remaining_left - duration, 0.0)
-                remaining_right = max(remaining_right - duration, 0.0)
+            if not seg.is_audio:
+                continue
+            if left < seg.start - tolerance:
+                break
+            if left <= seg.end + tolerance:
+                target_segment = seg
+                left_rel = clamp_time(left - seg.start, 0.0, seg.duration)
+                right_rel = clamp_time(right - seg.start, 0.0, seg.duration)
+                if right > seg.end + tolerance:
+                    raise ValueError(
+                        f"Annotation #{index} ({left}-{right}s) extends past the end of "
+                        f"audio segment '{seg.name}' ({seg.start:.6f}-{seg.end:.6f}s). "
+                        "Check the spacer duration for this metafile."
+                    )
+                break
 
         if target_segment is None:
             raise ValueError(
-                f"Could not match annotation #{index} ({left}-{right}s) to an audio segment."
+                f"Could not match annotation #{index} ({left}-{right}s) to an audio segment. "
+                f"The annotation starts in {describe_timeline_position(left, segments)}. "
+                "Check --default-spacer-seconds and any --spacer-duration-override values."
             )
         if target_segment.path is None or target_segment.samplerate is None:
             raise ValueError(
@@ -390,6 +528,29 @@ def map_annotations_to_segments(
         )
 
     return mapped
+
+
+def print_metafile_diagnostics(
+    meta: Path,
+    segments: Sequence[Segment],
+    annotations: Sequence[Annotation],
+    effective_spacer: float,
+    matched_override_key: Optional[str],
+    use_audio_duration_for_spacers: bool,
+) -> None:
+    source_label = "override" if matched_override_key is not None else "default"
+    detail = matched_override_key if matched_override_key is not None else "none"
+    print(
+        f"[diagnose] {meta}: spacer baseline {effective_spacer:.6f}s "
+        f"({source_label}={detail}, spacer_audio_duration={use_audio_duration_for_spacers})"
+    )
+
+    for seg in segments:
+        kind = "audio" if seg.is_audio else "spacer"
+        print(
+            f"[diagnose]   {kind:6s} {seg.start:10.6f}-{seg.end:10.6f}s "
+            f"dur={seg.duration:10.6f}s name={seg.name}"
+        )
 
 
 def discover_metafiles(meta_args: Optional[Sequence[Path]], root: Path) -> List[Path]:
@@ -475,6 +636,45 @@ def build_annotation_match_tokens(annotation_name: str) -> List[str]:
     return tokens
 
 
+def match_annotation_name(
+    comment: str,
+    token_map: Mapping[str, Sequence[str]],
+) -> Optional[str]:
+    if not token_map:
+        return None
+
+    comment = (comment or "").strip()
+    if not comment:
+        return None
+
+    comment_lower = comment.lower()
+    comment_forms = [
+        comment_lower,
+        comment_lower.replace("-", "_"),
+        comment_lower.replace("_", " "),
+        comment_lower.replace(" ", "_"),
+    ]
+    sorted_tokens = sorted(token_map.items(), key=lambda item: len(item[0]), reverse=True)
+    for token, names in sorted_tokens:
+        if any(token in form for form in comment_forms):
+            if names:
+                return names[0]
+            return None
+    return None
+
+
+def filter_raw_annotations_by_comment(
+    annotations: Sequence[Tuple[str, int, float, float, float, float, str, str]],
+    token_map: Mapping[str, Sequence[str]],
+) -> List[Tuple[str, int, float, float, float, float, str, str]]:
+    result: List[Tuple[str, int, float, float, float, float, str, str]] = []
+    for row in annotations:
+        comment = row[6]
+        if match_annotation_name(comment, token_map) is not None:
+            result.append(row)
+    return result
+
+
 def filter_annotations_by_comment(
     annotations: Sequence[Annotation],
     token_map: Mapping[str, Sequence[str]],
@@ -482,25 +682,9 @@ def filter_annotations_by_comment(
     if not token_map:
         return []
 
-    sorted_tokens = sorted(token_map.items(), key=lambda item: len(item[0]), reverse=True)
     result: List[Annotation] = []
     for ann in annotations:
-        comment = (ann.comment or "").strip()
-        if not comment:
-            continue
-        comment_lower = comment.lower()
-        comment_forms = [
-            comment_lower,
-            comment_lower.replace("-", "_"),
-            comment_lower.replace("_", " "),
-            comment_lower.replace(" ", "_"),
-        ]
-        matched_name: Optional[str] = None
-        for token, names in sorted_tokens:
-            if any(token in form for form in comment_forms):
-                if names:
-                    matched_name = names[0]
-                break
+        matched_name = match_annotation_name(ann.comment, token_map)
         if matched_name:
             ann.annotation_name = matched_name
             result.append(ann)
@@ -721,6 +905,7 @@ def apply_bandpass(
 def main() -> None:
     args = parse_args()
     spacer_overrides: Dict[str, float] = dict(args.spacer_duration_override)
+    used_override_keys: Set[str] = set()
 
     metafiles = discover_metafiles(args.meta, args.root)
     if not metafiles:
@@ -747,8 +932,10 @@ def main() -> None:
 
     all_annotations: List[Annotation] = []
     for meta in metafiles:
-        override_value = resolve_spacer_override(meta, spacer_overrides)
+        override_value, matched_override_key = resolve_spacer_override(meta, spacer_overrides)
         effective_spacer = override_value if override_value is not None else args.default_spacer_seconds
+        if matched_override_key is not None:
+            used_override_keys.add(matched_override_key)
 
         target_key: Optional[Tuple[str, str]] = None
 
@@ -769,7 +956,13 @@ def main() -> None:
                 continue
 
         audio_dir = args.audio_dir if args.audio_dir is not None else meta.parent
-        segments, inferred_log = read_metafile(meta, audio_dir, effective_spacer)
+        segments, inferred_log = read_metafile(
+            meta,
+            audio_dir,
+            effective_spacer,
+            args.root,
+            args.spacer_use_audio_duration,
+        )
         log_path = args.log if args.log is not None else meta.parent / inferred_log
 
         if args.filter_twitter:
@@ -794,10 +987,14 @@ def main() -> None:
                 continue
 
         annotations_raw = load_annotations(log_path)
+        if args.filter_twitter:
+            token_map = signature_tokens.get(target_key, {}) if target_key is not None else {}
+            annotations_raw = filter_raw_annotations_by_comment(annotations_raw, token_map)
+            if not annotations_raw:
+                continue
         mapped = map_annotations_to_segments(annotations_raw, segments, args.tolerance, meta)
 
         if args.filter_twitter:
-            token_map = signature_tokens.get(target_key, {}) if target_key is not None else {}
             mapped = filter_annotations_by_comment(mapped, token_map)
             if not mapped:
                 continue
@@ -818,7 +1015,23 @@ def main() -> None:
                 ann.annotation_name = ann.comment
             resolved_audio = ann.source_path.resolve()
             ann.audio_path = str(resolved_audio)
+        if args.diagnose:
+            print_metafile_diagnostics(
+                meta,
+                segments,
+                mapped,
+                effective_spacer,
+                matched_override_key,
+                args.spacer_use_audio_duration,
+            )
         all_annotations.extend(mapped)
+
+    unused_override_keys = sorted(set(spacer_overrides) - used_override_keys)
+    if unused_override_keys:
+        print(
+            "Warning: spacer overrides were provided but did not match any metafile or deployment folder: "
+            + ", ".join(unused_override_keys)
+        )
 
     for idx, ann in enumerate(all_annotations, start=1):
         ann.global_index = idx

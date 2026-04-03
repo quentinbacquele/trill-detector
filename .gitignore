@@ -40,3 +40,9 @@ processed_annotations.csv
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
+
+# Local workspace artifacts
+.vscode/
+.yolo_config/
+Virtuosity-Detector/
+compare_trill_models.ipynb
