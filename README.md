@@ -79,6 +79,8 @@ Raw Audio + Annotations
 
 Converts master annotation logs into a structured CSV with per-file annotations.
 
+The script rebuilds the annotation timeline from each metafile. Every WAV line contributes its real audio duration, and every spacer line contributes the configured spacer duration. Spacer filenames are only used to mark where a spacer exists; the effective spacer length comes from `--default-spacer-seconds` or a matching `--spacer-duration-override`.
+
 ```bash
 python process_trill_metadata.py \
   --root "path/to/recordings" \
@@ -92,9 +94,12 @@ Key options:
 | Flag | Description |
 |------|-------------|
 | `--root` | Folder containing metafiles and WAV recordings |
+| `--default-spacer-seconds` | Default spacer duration used for every spacer entry in a metafile (default `55.125`) |
+| `--spacer-duration-override NAME=SECONDS` | Override spacer duration for a specific metafile or deployment folder |
 | `--skip-spectrograms` | Skip image generation (faster) |
 | `--extract-clips` | Save audio clips for each annotation |
 | `--filter-twitter` | Filter to specific call types from signatures CSV |
+| `--diagnose` | Print the reconstructed audio/spacer timeline used for annotation mapping |
 
 Run `python process_trill_metadata.py --help` for all options.
 
