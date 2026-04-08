@@ -181,6 +181,8 @@ python infer_trills.py \
   --confidence 0.35
 ```
 
+By default, the current `infer_trills.py` writes a CSV plus per-detection spectrogram PNGs. If you do not pass `--spectrogram-dir`, those PNGs are written to a `spectrograms/` folder under the common parent directory of the input WAV files. This location is derived from the paths you pass at runtime; it is not hard-coded to a developer machine path.
+
 Key options:
 
 | Flag | Description |
@@ -190,8 +192,17 @@ Key options:
 | `--confidence` | Minimum detection confidence (0-1) |
 | `--slice-seconds` | Window size (match training) |
 | `--hop-seconds` | Stride between windows |
+| `--spectrogram-dir` | Directory for per-detection inference-window spectrogram PNGs. If omitted, the script currently defaults to `spectrograms/` under the common parent of the input WAVs. |
+| `--merge-overlaps` | Merge overlapping detections within each audio file before writing the final CSV. |
+| `--post-spectrogram-dir` | Optional directory for post-merge spectrogram PNGs, re-rendered from audio around each final detection with padding and a bounding box. Nothing is written here unless you pass this flag. |
+| `--post-spectrogram-padding` | Extra seconds added before and after each merged detection when writing `--post-spectrogram-dir` images. |
 
 Output CSV contains: audio path, time boundaries, frequency bounds, and confidence scores.
+
+Output differences:
+
+- `--spectrogram-dir` stores the original spectrogram image used during inference for each retained detection window. These files are saved before overlap merging, so the same biological event can appear more than once if it is detected in overlapping windows.
+- `--post-spectrogram-dir` stores a new spectrogram rendered after inference from the audio around each final detection, with optional padding and an overlaid bounding box. These files are only created when the flag is provided, and they reflect the merged final detections when `--merge-overlaps` is enabled.
 
 Run `python infer_trills.py --help` for all options.
 
